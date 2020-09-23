@@ -1,6 +1,8 @@
 import numpy as np
 import matplotlib as plt
 import pandas as pd
+import re
+from pydotplus import graphviz
 
 
 class Node:
@@ -31,14 +33,13 @@ def loadDataSet(file_name):
     return df
 
 
-def GetLabelCount(df):
+def GetLabelCount(label_arr):
     '''
-    :param df: the pandas dataframe of the dataset
+    :param label_arr: the label array of the dataset
     :return: dist:{key, value}
              key: label
              value: label count
     '''
-    label_arr = df[df.columns[-1]]
     label_count = {}
     for label in label_arr:
         if label in label_count:
@@ -53,7 +54,7 @@ def SameAttrValue(df):
     :param df: the pandas dataframe of the dataset
     :return: True if all row has the same attribute value, otherwise False
     '''
-    for i in len(df):
+    for i in range(len(df)):
         if not (df.iloc[0, 1:-1] == df.iloc[i, 1:-1]).all():
             return False
     return True
@@ -79,23 +80,27 @@ def InfoGain(df, attr):
     :return: information gain of df divided by attribute
     '''
     info_gain = InfoEnt(df[df.columns[-1]])
+    div_value = 0
     n = len(df[attr])
-    if df[attr].dtype == (float, int):
+    if df[attr].dtype == float:
         sub_info_ent = {}
-        df = df.sort([attr], asending=1)
+        df = df.sort_values([attr], ascending=1)
+        df = df.reset_index(drop=True)
         value_arr = df[attr]
         label_arr = df[df.columns[-1]]
-        for i in range(n):
+        for i in range(n-1):
             div = (value_arr[i] + value_arr[i+1]) / 2
             sub_info_ent[div] = ((i+1) / n * InfoEnt(label_arr[0:i+1]) \
                                  + (n-i-1) / n * InfoEnt(label_arr[i+1:-1]))
         div_value, min_sub_info_ent = min(sub_info_ent.items(), key=lambda x:x[1])
         info_gain -= min_sub_info_ent
     else:
+        value_arr = df[attr]
+        label_arr = df[df.columns[-1]]
         value_count = GetValueCount(df[attr])
         for value in value_count:
-            df_v = df[df[attr].isin[value]]
-            info_gain -= value_count[value] / len(df[attr]) * InfoEnt(df_v[df.columns[-1]])
+            sub_label_arr = label_arr[value_arr == value]
+            info_gain -= value_count[value] / len(df[attr]) * InfoEnt(sub_label_arr)
 
     return info_gain, div_value
 
@@ -106,10 +111,12 @@ def SelectOptAttr(df):
     :return: (the optimal attribute, the optimal divide value)
     '''
     gain = 0
+    #print(df); print(df.columns[1:-1])
     # for each attribute, compute info gain, and find the attribute which has maximum info gain
     for attr in df.columns[1:-1]:
         # compute info gain
         gain_tmp, div_tmp = InfoGain(df, attr)
+        #print('attr: ' + str(attr) + ' info gain: ' + str(gain_tmp) + ' divide value: ' + str(div_tmp))
         if gain_tmp > gain:
             gain = gain_tmp
             opt_attr = attr
@@ -132,18 +139,19 @@ def GetValueCount(value_arr):
             value_count[value] = 1
     return value_count
 
+
 def TreeGenerate(df):
     # generate node
     node = Node(None, None, {})
     # if samples in set D are the same class C, set leaf node the Class C and return
     label_count = GetLabelCount(df[df.columns[-1]])
     if len(label_count) == 1:
-        node.label = max(label_count, key=label_count.get())
+        node.label = max(label_count, key=label_count.get)
         return node
     # if attribute set A is NULL or the samples in D are the same value on attribute A,
     # set leaf node the class which has the most samples on set D
     if len(df.columns[1:-1]) == 0 or SameAttrValue(df):
-        node.label = max(label_count, key=label_count.get())
+        node.label = max(label_count, key=label_count.get)
         return node
     # select optimal divide attribute
     opt_attr, div_val = SelectOptAttr(df)
@@ -153,7 +161,7 @@ def TreeGenerate(df):
         value_count = GetValueCount(df[opt_attr])
         for v in value_count:
             # get D_v by v
-            df_v = df[df[opt_attr].isin[v]]
+            df_v = df[df[opt_attr].isin([v])]
             # if the sample numbers of D_v is zero, set node the class which has the most samples in D
             if df_v.empty:
                 node.attr_down[v] = Node(None, max(label_count, key=label_count.get()), {})
@@ -171,5 +179,52 @@ def TreeGenerate(df):
     # return tree
     return node
 
+
+def DrawPng(root, out_file):
+    g = graphviz.Dot()
+    TreeToGraph(root, 0, g)
+    g.write("../data/tree.dot")
+
+
+def TreeToGraph(root, i, g):
+    if root.attr is None:
+        g_node_label = "Node:%d\n好瓜:%s" % (i, root.label)
+    else:
+        g_node_label = "Node:%d\n好瓜:%s\n属性:%s" % (i, root.label, root.attr)
+    g_node = i
+    g.add_node(graphviz.Node(g_node, label=g_node_label))
+
+    for value in list(root.attr_down):
+        i, g_child = TreeToGraph(root.attr_down[value], i+1, g)
+        g.add_edge(graphviz.Edge(g_node, g_child, label=value))
+    return i, g_node
+
+
+def Predict(root, df_sample):
+    while root.attr is not None:
+        if df_sample[root.attr].dtype == (float, int):
+            # get div_value from root.attr_down
+            for key in list(root.attr_down):
+                num = re.findall(r"\d+\.?\d*", key)
+                div_value = float(num[0])
+                break
+            if df_sample[root.attr].values[0] <= div_value:
+                key = "<=%.3f" % div_value
+                root = root.attr_down[key]
+            else:
+                key = ">%.3f" % div_value
+                root = root.attr_down[key]
+        else:
+            key = df_sample[root.attr].values[0]
+            if key in root.attr_down:
+                root = root.attr_down[key]
+            else:
+                break
+    return root.label
+
+
 if __name__ == "__main__":
-    loadDataSet("../data/watermelon_3.csv")
+    df = loadDataSet("../data/watermelon_3.csv")
+    root = TreeGenerate(df)
+    DrawPng(root, "../data/decision_tree.png")
+
